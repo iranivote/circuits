@@ -1,0 +1,10 @@
+[package]
+name = "exclusion_check_place_of_birth"
+type = "lib"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+utils = { path = "../../utils" }
+data_check_dg11 = { path = "../../data-check/dg11" }
+poseidon = { tag = "v0.1.2", git = "https://github.com/zkpassport/noir_poseidon2" }

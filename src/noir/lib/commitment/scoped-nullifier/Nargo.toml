@@ -1,0 +1,9 @@
+[package]
+name = "commitment_scoped_nullifier"
+type = "lib"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+utils = { path = "../../utils" }
+common = { path = "../common" }

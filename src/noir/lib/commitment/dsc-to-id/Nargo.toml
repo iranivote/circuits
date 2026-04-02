@@ -1,0 +1,9 @@
+[package]
+name = "commitment_dsc_to_id"
+type = "lib"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+utils = { path = "../../utils" }
+common = { path = "../common" }

@@ -1,0 +1,12 @@
+[package]
+name = "inclusion_check_place_of_birth"
+type = "bin"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+inclusion_check_place_of_birth = { path = "../../../../lib/inclusion-check/place-of-birth" }
+data_check_dg11 = { path = "../../../../lib/data-check/dg11" }
+commitment = { path = "../../../../lib/commitment/scoped-nullifier" }
+utils = { path = "../../../../lib/utils" }
+data_check_expiry = { path = "../../../../lib/data-check/expiry" }

@@ -1,0 +1,21 @@
+{
+  "name": "@iranivote/circuit-builder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "tsx scripts/circuit-builder.ts generate",
+    "compile": "tsx scripts/circuit-builder.ts compile",
+    "generate:compile": "tsx scripts/circuit-builder.ts generate compile",
+    "generate-proof": "tsx scripts/generate-proof.ts"
+  },
+  "dependencies": {
+    "@noir-lang/noir_js": "1.0.0-beta.19",
+    "@aztec/bb.js": "4.0.0-nightly.20260120"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
