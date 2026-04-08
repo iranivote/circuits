@@ -12,7 +12,7 @@ global ZKR_COUNTRY_CODE_BYTES: [u8; 3] = [90, 75, 82];
 
 /// Verify the integrity-to-disclosure commitment, then produce a scoped nullifier.
 ///
-/// The nullifier is: H(private_nullifier, service_scope, service_subscope [, secret])
+/// The nullifier is: H(dg1_hash, service_scope, service_subscope [, secret])
 /// It is deterministic per passport per (scope, subscope) pair, preventing double-use
 /// while remaining unlinkable across different scopes (e.g. different elections).
 ///
@@ -40,7 +40,7 @@ pub fn nullify(
         "Commitment from integrity proof doesn't match in disclosure proof",
     );
     let scoped_nullifier = calculate_scoped_nullifier(
-        salted_private_nullifier,
+        salted_dg1.value,
         service_scope,
         service_subscope,
         nullifier_secret,

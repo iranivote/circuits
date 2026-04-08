@@ -11,6 +11,7 @@ export interface RsaSigConfig {
   type: "rsa";
   padding: RsaPadding;
   bitSize: 1024 | 2048 | 3072 | 4096;
+  hash?: string;
 }
 
 export interface EcdsaSigConfig {
@@ -18,17 +19,14 @@ export interface EcdsaSigConfig {
   family: EcdsaCurveFamily;
   curveName: string;
   bitSize: number;
+  hash?: string;
 }
 
 export type SignatureConfig = RsaSigConfig | EcdsaSigConfig;
 
 export interface CircuitSelector {
-  stage: "dsc" | "id-data" | "integrity" | "disclosure";
+  stage: "signup" | "disclosure";
   sig?: SignatureConfig;
-  hash?: HashAlgorithm;
-  tbsMaxLen?: number;
-  saHash?: HashAlgorithmExtended;
-  dgHash?: HashAlgorithmExtended;
   disclosureType?: string;
 }
 
@@ -79,8 +77,10 @@ export interface PassportData {
   cscPubkeyRedcParam?: Uint8Array;
   /** CSC signature over the TBS certificate */
   cscSignature?: Uint8Array;
-  /** Signature algorithm configuration */
+  /** DSC's signature algorithm (used for SOD stage) */
   sigConfig: SignatureConfig;
+  /** CSCA's signature algorithm (used for DSC stage). May differ from sigConfig. */
+  cscSigConfig?: SignatureConfig;
   /** Hash algorithm used for data groups */
   dgHashAlgorithm: HashAlgorithm;
   /** Hash algorithm used for signed attributes */
@@ -123,21 +123,13 @@ export interface ProofResult {
 
 /** Bundle of all proofs for the full passport verification chain */
 export interface ProofChainBundle {
-  dscProof: ProofResult;
-  idDataProof: ProofResult;
-  integrityProof: ProofResult;
+  signupProof: ProofResult;
   disclosureProof?: ProofResult;
-  /** The commitment that links all stages */
   commitment: string;
-  /** Scoped nullifier (for sybil resistance) */
   nullifier?: string;
-  /** Parameter commitment (for disclosure circuits) */
   paramCommitment?: string;
-  /** Which circuits were used */
   circuitNames: {
-    dsc: string;
-    idData: string;
-    integrity: string;
+    signup: string;
     disclosure?: string;
   };
 }

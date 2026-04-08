@@ -1,11 +1,12 @@
 import { randomBytes, createHash } from "crypto";
+import * as asn1js from "asn1js";
 import type {
   PassportData,
   CircuitInputs,
   CertificateRegistryProof,
-  HashAlgorithm,
   HashAlgorithmExtended,
   RsaSigConfig,
+  EcdsaSigConfig,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -43,10 +44,21 @@ export function randomSalt(): string {
   return n.toString();
 }
 
-/** Convert a 3-letter country code to a Noir `str<3>` representation */
-function countryToNoir(code: string): string {
-  if (code.length !== 3) throw new Error(`Expected 3-letter country code, got: ${code}`);
-  return code;
+export function deterministicSalt(dg1: Uint8Array, label: string): string {
+  const hash = createHash("sha256")
+    .update(Buffer.from(dg1))
+    .update(label)
+    .digest()
+    .subarray(0, 31);
+  return BigInt("0x" + Buffer.from(hash).toString("hex")).toString();
+}
+
+export function deterministicNullifier(dg1: Uint8Array): Uint8Array {
+  const hash = createHash("sha256")
+    .update(Buffer.from(dg1))
+    .update("private-nullifier")
+    .digest();
+  return new Uint8Array(hash);
 }
 
 function hashAlgoId(h: HashAlgorithmExtended): number {
@@ -77,124 +89,126 @@ export function extractCountryFromDg1(dg1: Uint8Array): string {
   return String.fromCharCode(dg1[7], dg1[8], dg1[9]);
 }
 
-// ---------------------------------------------------------------------------
-// Stage 1: DSC sig-check inputs
-// ---------------------------------------------------------------------------
-
-export interface DscInputOptions {
-  passport: PassportData;
-  registryProof: CertificateRegistryProof;
-  salt?: string;
+function keySizeSelector(bitSize: number): number {
+  if (bitSize <= 2048) return 0;
+  if (bitSize <= 3072) return 1;
+  return 2;
 }
 
-export function buildDscInputs(opts: DscInputOptions): CircuitInputs {
-  const { passport, registryProof } = opts;
-  const salt = opts.salt ?? randomSalt();
-  const sig = passport.sigConfig;
+function hashTypeSelector(hash: string): number {
+  const map: Record<string, number> = { sha1: 0, sha256: 1, sha384: 2, sha512: 3 };
+  return map[hash] ?? 1;
+}
 
-  if (sig.type !== "rsa") {
-    throw new Error("ECDSA DSC inputs not yet implemented");
+function paddingTypeSelector(padding: string): number {
+  return padding === "pss" ? 1 : 0;
+}
+
+function curveTypeSelector(curveName: string): number {
+  if (curveName === "p256") return 0;
+  if (curveName === "p384") return 1;
+  return 2;
+}
+
+function rsaModulusBytes(bitSize: number): number {
+  if (bitSize <= 2048) return 256;
+  if (bitSize <= 3072) return 384;
+  return 512;
+}
+
+function padEcdsaCoord(b: Uint8Array, coordBytes: number): Uint8Array {
+  if (b.length === coordBytes) return b;
+  if (b.length > coordBytes) return b.slice(b.length - coordBytes);
+  const o = new Uint8Array(coordBytes);
+  o.set(b, coordBytes - b.length);
+  return o;
+}
+
+const ECDSA_CURVE_ORDER: Record<string, bigint> = {
+  p192: 0x6277101735386680763835789423176059013767194773182842284081n,
+  p224: 0xffffffffffffffffffffffffffff16a2e0b8f03e13dd29455c5c2a3dn,
+  p256: 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n,
+  p384:
+    0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973n,
+  p521:
+    0x01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409n,
+  "192r1": 0xc302f41d932a36cda7a3462f9e9e916b5be8f1029ac4acc1n,
+  "224r1": 0xd7c134aa264366862a18302575d0fb98d116bc4b6ddebca3a5a7939fn,
+  "256r1": 0xa9fb57dba1eea9bc3e660a909d838d718c397aa3b561a6f7901e0e82974856a7n,
+  "384r1":
+    0x8cb91e82a3386d280f5d6f7e50e641df152f7109ed5456b31f166e6cac0425a7cf3ab6af6b7fc3103b883202e9046565n,
+  "512r1":
+    0xaadd9db8dbe9c48b3fd4e6ae33c9fc07cb308db3b3c9d20ed6639cca703308717d4d9b009bc66842aecda12ae6a380e62881ff2f2d82c68528aa6056583a48f3n,
+};
+
+function parseEcdsaSignatureDer(
+  der: Uint8Array,
+  coordBytes: number,
+  curveOrder?: bigint,
+): { r: Uint8Array; s: Uint8Array } {
+  const ab = (der.buffer as ArrayBuffer).slice(der.byteOffset, der.byteOffset + der.byteLength);
+  const parsed = asn1js.fromBER(ab);
+  if (parsed.offset === -1) throw new Error("Failed to parse ECDSA signature DER");
+
+  const seq = parsed.result as asn1js.Sequence;
+  const rInt = seq.valueBlock.value[0] as asn1js.Integer;
+  const sInt = seq.valueBlock.value[1] as asn1js.Integer;
+
+  let rBytes = new Uint8Array(rInt.valueBlock.valueHexView);
+  let sBytes = new Uint8Array(sInt.valueBlock.valueHexView);
+
+  if (rBytes[0] === 0 && rBytes.length > coordBytes) rBytes = rBytes.slice(1);
+  if (sBytes[0] === 0 && sBytes.length > coordBytes) sBytes = sBytes.slice(1);
+
+  if (curveOrder) {
+    const sVal = BigInt("0x" + Buffer.from(sBytes).toString("hex"));
+    const halfOrder = curveOrder >> 1n;
+    if (sVal > halfOrder) {
+      const sNorm = curveOrder - sVal;
+      const hex = sNorm.toString(16).padStart(coordBytes * 2, "0");
+      sBytes = new Uint8Array(Buffer.from(hex, "hex"));
+    }
   }
 
-  const rsa = sig as RsaSigConfig;
-  const modBytes = Math.ceil(rsa.bitSize / 8);
-  const tbsBucket = passport.tbsCertificate.length;
+  return { r: padEcdsaCoord(rBytes, coordBytes), s: padEcdsaCoord(sBytes, coordBytes) };
+}
 
+function ecdsaSodRs(
+  sig: Uint8Array,
+  coordBytes: number,
+  curveName: string,
+): { r: Uint8Array; s: Uint8Array } {
+  if (sig.length > 0 && sig[0] === 0x30) {
+    const order = ECDSA_CURVE_ORDER[curveName];
+    return parseEcdsaSignatureDer(sig, coordBytes, order);
+  }
   return {
-    certificate_registry_root: registryProof.root,
-    certificate_registry_index: registryProof.index,
-    certificate_registry_hash_path: registryProof.hashPath,
-    certificate_tags: registryProof.tags,
-    salt,
-    country: extractCountryFromDg1(passport.dg1),
-    tbs_certificate: zeroPad(passport.tbsCertificate, tbsBucket <= 700 ? 700 : tbsBucket <= 1000 ? 1000 : 1200),
-    csc_pubkey: zeroPad(passport.cscPubkey!, modBytes),
-    csc_pubkey_redc_param: zeroPad(passport.cscPubkeyRedcParam!, modBytes + 1),
-    dsc_signature: zeroPad(passport.cscSignature!, modBytes),
-    exponent: passport.rsaExponent ?? 65537,
-    ...(rsa.padding === "pss" ? { pss_salt_len: passport.pssSaltLen ?? 32 } : {}),
-    // Pass-through metadata for chaining
-    _salt: salt,
+    r: padEcdsaCoord(sig.slice(0, coordBytes), coordBytes),
+    s: padEcdsaCoord(sig.slice(coordBytes, 2 * coordBytes), coordBytes),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stage 2: ID data sig-check inputs
-// ---------------------------------------------------------------------------
+/** Inputs for `signup_verify_*` from synthetic {@link PassportData} (tests / CLI mocks). */
+export function buildSignupVerifyInputsFromPassport(
+  passport: PassportData,
+  trustedRegistry: CertificateRegistryProof,
+): CircuitInputs {
+  const dg1 = passport.dg1;
+  const dgHashId = hashAlgoId(passport.dgHashAlgorithm as HashAlgorithmExtended);
+  const saHashId = hashAlgoId((passport.saHashAlgorithm ?? passport.dgHashAlgorithm) as HashAlgorithmExtended);
+  const dg1Salt = deterministicSalt(dg1, "integrity-dg1");
+  const expiryDateSalt = deterministicSalt(dg1, "integrity-expiry");
+  const dg2HashSalt = deterministicSalt(dg1, "integrity-dg2-hash");
+  const privateNullifierSalt = deterministicSalt(dg1, "integrity-nullifier-salt");
+  const privateNullifier = deterministicNullifier(dg1);
+  const tags = trustedRegistry.tags;
 
-export interface IdDataInputOptions {
-  passport: PassportData;
-  /** Output commitment from DSC stage */
-  dscCommitment: string;
-  saltIn?: string;
-  saltOut?: string;
-}
-
-export function buildIdDataInputs(opts: IdDataInputOptions): CircuitInputs {
-  const { passport } = opts;
-  const saltIn = opts.saltIn ?? randomSalt();
-  const saltOut = opts.saltOut ?? randomSalt();
-  const sig = passport.sigConfig;
-
-  if (sig.type !== "rsa") {
-    throw new Error("ECDSA ID data inputs not yet implemented");
-  }
-
-  const rsa = sig as RsaSigConfig;
-  const modBytes = Math.ceil(rsa.bitSize / 8);
-
-  return {
-    comm_in: opts.dscCommitment,
-    salt_in: saltIn,
-    salt_out: saltOut,
-    dg1: zeroPad(passport.dg1, DG1_MAX_LENGTH),
-    dsc_pubkey: zeroPad(passport.dscPubkey, modBytes),
-    dsc_pubkey_redc_param: zeroPad(passport.dscPubkeyRedcParam!, modBytes + 1),
-    sod_signature: zeroPad(passport.sodSignature, modBytes),
-    tbs_certificate: zeroPad(passport.tbsCertificate,
-      passport.tbsCertificate.length <= 700 ? 700 : passport.tbsCertificate.length <= 1000 ? 1000 : 1200),
-    signed_attributes: zeroPad(passport.signedAttributes, SIGNED_ATTRS_LENGTH),
-    exponent: passport.rsaExponent ?? 65537,
-    e_content: zeroPad(passport.eContent, ECONTENT_LENGTH),
-    ...(rsa.padding === "pss" ? { pss_salt_len: passport.pssSaltLen ?? 32 } : {}),
-    _saltOut: saltOut,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Stage 3: Data integrity check inputs
-// ---------------------------------------------------------------------------
-
-export interface IntegrityInputOptions {
-  passport: PassportData;
-  /** Output commitment from ID data stage */
-  idDataCommitment: string;
-  saltIn?: string;
-  dg1Salt?: string;
-  expiryDateSalt?: string;
-  dg2HashSalt?: string;
-  privateNullifierSalt?: string;
-}
-
-export function buildIntegrityInputs(opts: IntegrityInputOptions): CircuitInputs {
-  const { passport } = opts;
-  const saltIn = opts.saltIn ?? randomSalt();
-  const dg1Salt = opts.dg1Salt ?? randomSalt();
-  const expiryDateSalt = opts.expiryDateSalt ?? randomSalt();
-  const dg2HashSalt = opts.dg2HashSalt ?? randomSalt();
-  const privateNullifierSalt = opts.privateNullifierSalt ?? randomSalt();
-
-  // The private nullifier is derived from passport data -- for now use a random placeholder
-  const privateNullifier = new Uint8Array(32);
-  randomBytes(32).copy(Buffer.from(privateNullifier.buffer));
-
-  return {
-    comm_in: opts.idDataCommitment,
-    salt_in: saltIn,
-    salted_dg1: {
-      salt: dg1Salt,
-      value: zeroPad(passport.dg1, DG1_MAX_LENGTH),
-    },
+  const common = {
+    trusted_dsc_root: trustedRegistry.root,
+    certificate_registry_index: trustedRegistry.index,
+    certificate_registry_hash_path: trustedRegistry.hashPath,
+    certificate_tags: [String(tags[0]), String(tags[1]), String(tags[2])],
+    salted_dg1: { salt: dg1Salt, value: zeroPad(dg1, DG1_MAX_LENGTH) },
     expiry_date_salt: expiryDateSalt,
     dg2_hash_salt: dg2HashSalt,
     signed_attributes: zeroPad(passport.signedAttributes, SIGNED_ATTRS_LENGTH),
@@ -203,17 +217,46 @@ export function buildIntegrityInputs(opts: IntegrityInputOptions): CircuitInputs
       salt: privateNullifierSalt,
       value: toNoirBytes(privateNullifier),
     },
-    // Carry forward salts for the disclosure stage
-    _dg1Salt: dg1Salt,
-    _expiryDateSalt: expiryDateSalt,
-    _dg2HashSalt: dg2HashSalt,
-    _privateNullifierSalt: privateNullifierSalt,
-    _privateNullifier: toNoirBytes(privateNullifier),
+    dg_hash_type: dgHashId,
+    sa_hash_type: saHashId,
+  };
+
+  const sig = passport.sigConfig;
+  if (sig.type === "rsa") {
+    const rsa = sig as RsaSigConfig;
+    const actualModBytes = rsaModulusBytes(rsa.bitSize);
+    return {
+      ...common,
+      dsc_pubkey: zeroPad(passport.dscPubkey, 512),
+      dsc_pubkey_redc_param: zeroPad(passport.dscPubkeyRedcParam!, 513),
+      sod_signature: zeroPad(passport.sodSignature, 512),
+      exponent: passport.rsaExponent ?? 65537,
+      key_size: keySizeSelector(rsa.bitSize),
+      hash_type: hashTypeSelector(rsa.hash ?? "sha256"),
+      padding_type: paddingTypeSelector(rsa.padding),
+      pss_salt_len: rsa.padding === "pss" ? (passport.pssSaltLen ?? 32) : 0,
+      pubkey_len: actualModBytes,
+    };
+  }
+
+  const ec = sig as EcdsaSigConfig;
+  const coordBytes = Math.ceil(ec.bitSize / 8);
+  const pubkey = passport.dscPubkey;
+  const { r, s } = ecdsaSodRs(passport.sodSignature, coordBytes, ec.curveName);
+  return {
+    ...common,
+    dsc_pubkey_x: zeroPad(pubkey.slice(0, coordBytes), 66),
+    dsc_pubkey_y: zeroPad(pubkey.slice(coordBytes, 2 * coordBytes), 66),
+    sod_sig_r: zeroPad(r, 66),
+    sod_sig_s: zeroPad(s, 66),
+    curve_type: curveTypeSelector(ec.curveName),
+    hash_type: hashTypeSelector(ec.hash ?? "sha256"),
+    pubkey_len: coordBytes * 2,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Stage 4: Disclosure circuit inputs (compare_age as example)
+// Disclosure circuit inputs (compare_age as example)
 // ---------------------------------------------------------------------------
 
 export interface AgeDisclosureInputOptions {

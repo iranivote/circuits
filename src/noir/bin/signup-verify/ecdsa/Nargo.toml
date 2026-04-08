@@ -1,0 +1,12 @@
+[package]
+name = "signup_verify_ecdsa"
+type = "bin"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+sig_verify_ecdsa = { path = "../../../lib/sig-verify/ecdsa" }
+utils = { path = "../../../lib/utils" }
+commitment_common = { path = "../../../lib/commitment/common" }
+commitment_integrity_to_disclosure = { path = "../../../lib/commitment/integrity-to-disclosure" }
+data_check_integrity = { path = "../../../lib/data-check/integrity" }

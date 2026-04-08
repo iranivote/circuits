@@ -17,61 +17,44 @@ pub fn normalize_dg2_hash<let DG2_HASH_SIZE: u32>(dg2_hash: [u8; DG2_HASH_SIZE])
     poseidon2_hash_packed(dg2_hash, DG2_HASH_SIZE)
 }
 
-/// Scoped nullifier: H(private_nullifier, service_scope, service_subscope [, secret])
-/// Deterministic per identity per service scope, unlinkable across scopes.
+/// Deterministic passport identifier derived from DG1 data: Poseidon2(pack(dg1)).
+/// Used by the integrity circuit as a public output so the server can detect
+/// duplicate signups from the same passport regardless of which salts were chosen.
+pub fn calculate_passport_identifier(dg1: DG1Data) -> Field {
+    poseidon2_hash_packed(dg1, DG1_LENGTH)
+}
+
+/// Scoped nullifier: H(dg1_hash, service_scope, service_subscope [, secret])
+/// Derived from the full DG1 data (verified against eContent in the integrity circuit),
+/// making it deterministic per passport regardless of which salts were used in the
+/// commitment. Unlinkable across different scopes (e.g. different elections).
 pub fn calculate_scoped_nullifier(
-    salted_private_nullifier: SaltedValue<32>,
+    dg1: DG1Data,
     service_scope: Field,
     service_subscope: Field,
     nullifier_secret: Field,
 ) -> Field {
-    if salted_private_nullifier.value == [0; 32] {
-        // Hidden behind salted hash; cannot derive nullifier
-        0
-    } else if nullifier_secret != 0 {
-        Poseidon2::hash(
-            [salted_private_nullifier.value[0] as Field, service_scope, service_subscope, nullifier_secret],
-            4,
-        )
+    let dg1_hash = poseidon2_hash_packed(dg1, DG1_LENGTH);
+    if nullifier_secret != 0 {
+        Poseidon2::hash([dg1_hash, service_scope, service_subscope, nullifier_secret], 4)
     } else {
-        Poseidon2::hash(
-            [salted_private_nullifier.value[0] as Field, service_scope, service_subscope],
-            3,
-        )
+        Poseidon2::hash([dg1_hash, service_scope, service_subscope], 3)
     }
 }
 
-/// Private nullifier derived from passport-unique data: H(dg1, e_content, sod_signature).
-/// This value is deterministic for a given passport and never changes.
+/// Private nullifier derived from passport-unique data: H(dg1_hash, ec_hash, sig_hash).
+/// Each component is individually hashed via poseidon2_hash_packed with its actual
+/// data length, making the result independent of buffer sizes.
 pub fn calculate_private_nullifier<let SIG: u32>(
     dg1: DG1Data,
     e_content: EContentData,
     sod_sig: [u8; SIG],
+    sig_len: u32,
 ) -> Field {
-    let mut hash_inputs: [Field; (DG1_LENGTH + 30) / 31 + (ECONTENT_LENGTH + 30) / 31 + (SIG + 30) / 31] =
-        std::mem::zeroed();
-
-    let packed_dg1: [Field; (DG1_LENGTH + 30) / 31] =
-        pack_be_bytes_into_fields_sized(dg1);
-    for i in 0..((DG1_LENGTH + 30) / 31) {
-        hash_inputs[i] = packed_dg1[i];
-    }
-
-    let packed_e_content: [Field; (ECONTENT_LENGTH + 30) / 31] =
-        pack_be_bytes_into_fields_sized(e_content);
-    for i in 0..((ECONTENT_LENGTH + 30) / 31) {
-        hash_inputs[(DG1_LENGTH + 30) / 31 + i] = packed_e_content[i];
-    }
-
-    let packed_sod_sig: [Field; (SIG + 30) / 31] = pack_be_bytes_into_fields_sized(sod_sig);
-    for i in 0..((SIG + 30) / 31) {
-        hash_inputs[(DG1_LENGTH + 30) / 31 + ((ECONTENT_LENGTH + 30) / 31) + i] = packed_sod_sig[i];
-    }
-
-    Poseidon2::hash(
-        hash_inputs,
-        (DG1_LENGTH + 30) / 31 + ((ECONTENT_LENGTH + 30) / 31) + (SIG + 30) / 31,
-    )
+    let dg1_hash = poseidon2_hash_packed(dg1, DG1_LENGTH);
+    let ec_hash = poseidon2_hash_packed(e_content, ECONTENT_LENGTH);
+    let sig_hash = poseidon2_hash_packed(sod_sig, sig_len);
+    Poseidon2::hash([dg1_hash, ec_hash, sig_hash], 3)
 }
 
 /// Commitment for the integrity-to-disclosure bridge.
@@ -141,27 +124,19 @@ pub fn hash_salt_country_signed_attr_dg1_e_content_private_nullifier(
     )
 }
 
-/// Commitment for the CSC-to-DSC bridge: H(salt, country, tbs_certificate)
+/// Commitment for the CSC-to-DSC bridge: H(salt, country, tbs_hash)
+/// The TBS is hashed independently via poseidon2_hash_packed using its actual
+/// length, making the result independent of the padded buffer size.
 pub fn hash_salt_country_tbs<let TBS_MAX_SIZE: u32>(
     salt: Field,
     country: Alpha3CountryCode,
     tbs: [u8; TBS_MAX_SIZE],
+    tbs_len: u32,
 ) -> Field {
     let country_bytes: [u8; 3] = country.as_bytes();
-    let mut hash_inputs: [Field; 2 + ((TBS_MAX_SIZE + 30) / 31)] =
-        [0; 2 + ((TBS_MAX_SIZE + 30) / 31)];
-    hash_inputs[0] = salt;
-
     let packed_country: Field = pack_be_bytes_into_fields_sized::<3, 1>(country_bytes)[0];
-    hash_inputs[1] = packed_country;
-
-    let packed_tbs: [Field; (TBS_MAX_SIZE + 30) / 31] =
-        pack_be_bytes_into_fields_sized(tbs);
-    for i in 0..((TBS_MAX_SIZE + 30) / 31) {
-        hash_inputs[2 + i] = packed_tbs[i];
-    }
-
-    Poseidon2::hash(hash_inputs, 2 + ((TBS_MAX_SIZE + 30) / 31))
+    let tbs_hash = poseidon2_hash_packed(tbs, tbs_len);
+    Poseidon2::hash([salt, packed_country, tbs_hash], 3)
 }
 
 /// Compute a Poseidon2 Merkle tree root from a leaf, its index, and the sibling path.
@@ -181,23 +156,19 @@ pub fn compute_merkle_root<let N: u32>(leaf: Field, index: Field, hash_path: [Fi
 }
 
 /// Compute a leaf for the certificate registry Merkle tree.
+/// The public key is hashed independently via poseidon2_hash_packed using its
+/// actual length, making the leaf independent of the padded buffer size.
 pub fn calculate_certificate_registry_leaf<let N: u32>(
     tags: [Field; 3],
     cert_type: u8,
     country: Alpha3CountryCode,
     public_key: [u8; N],
+    pubkey_len: u32,
 ) -> Field {
     let country_bytes: [u8; 3] = country.as_bytes();
     let unpacked_bytes: [u8; 4] =
         [cert_type as u8, country_bytes[0], country_bytes[1], country_bytes[2]];
-    let mut hash_inputs: [Field; 4 + (N + 30) / 31] = std::mem::zeroed();
-    hash_inputs[0] = tags[0];
-    hash_inputs[1] = tags[1];
-    hash_inputs[2] = tags[2];
-    hash_inputs[3] = utils::pack_be_bytes_into_field::<4, 31>(unpacked_bytes);
-    let packed_pubkey: [Field; (N + 30) / 31] = utils::pack_be_bytes_into_fields_sized(public_key);
-    for i in 0..packed_pubkey.len() {
-        hash_inputs[4 + i] = packed_pubkey[i] as Field;
-    }
-    Poseidon2::hash(hash_inputs, hash_inputs.len())
+    let header = utils::pack_be_bytes_into_field::<4, 31>(unpacked_bytes);
+    let pk_hash = poseidon2_hash_packed(public_key, pubkey_len);
+    Poseidon2::hash([tags[0], tags[1], tags[2], header, pk_hash], 5)
 }

@@ -143,3 +143,39 @@ pub fn get_dg2_hash_from_econtent<let DG2_LEN: u32>(
     }
     hash
 }
+
+/// Variable-length DG2 hash extraction. Returns a 64-byte buffer (zero-padded)
+/// with the first `expected_hash_len` bytes containing the actual hash.
+pub fn get_dg2_hash_from_econtent_var(
+    e_content: EContentData,
+    e_content_size: u32,
+    expected_hash_len: u32,
+) -> [u8; 64] {
+    let offset = utils::find_subarray_index(DG2_HASH_DER_IDENTIFIER, e_content);
+    assert(offset < ECONTENT_LENGTH, "DG2 hash not found in eContent");
+
+    let hash_size_offset = offset + DG2_HASH_DER_IDENTIFIER.len();
+    let hash_size = e_content[hash_size_offset] as u32;
+    assert(hash_size == expected_hash_len, "DG2 hash size mismatch");
+
+    let hash_offset = hash_size_offset + 1;
+    assert(hash_offset + expected_hash_len <= e_content_size, "DG2 hash extends beyond eContent");
+
+    let mut hash: [u8; 64] = [0; 64];
+    for i in 0..64 {
+        if i < expected_hash_len {
+            hash[i] = e_content[hash_offset + i];
+        }
+    }
+    hash
+}
+
+/// Map SHA identifier to digest byte length.
+///   1 = SHA-1 (20), 2 = SHA-224 (28), 3 = SHA-256 (32), 4 = SHA-384 (48), 5 = SHA-512 (64)
+pub fn hash_digest_len(hash_id: u8) -> u32 {
+    if hash_id == 1 { 20 }
+    else if hash_id == 2 { 28 }
+    else if hash_id == 3 { 32 }
+    else if hash_id == 4 { 48 }
+    else { 64 }
+}

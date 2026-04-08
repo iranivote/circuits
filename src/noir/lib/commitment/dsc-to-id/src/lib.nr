@@ -15,19 +15,22 @@ pub fn commit_to_dsc<let TBS_SIZE: u32, let PUBKEY_SIZE: u32, let REGISTRY_HEIGH
     certificate_tags: [Field; 3],
     country: Alpha3CountryCode,
     tbs_certificate: [u8; TBS_SIZE],
+    tbs_len: u32,
     salt: Field,
     csc_pubkey: [u8; PUBKEY_SIZE],
+    pubkey_len: u32,
 ) -> Field {
     let leaf = calculate_certificate_registry_leaf(
         certificate_tags,
         CSC_CERT_TYPE,
         country,
         csc_pubkey,
+        pubkey_len,
     );
     let computed_root = compute_merkle_root(leaf, certificate_registry_index, certificate_registry_hash_path);
     assert(computed_root == certificate_registry_root, "Certificate not in registry");
 
-    hash_salt_country_tbs(salt, country, tbs_certificate)
+    hash_salt_country_tbs(salt, country, tbs_certificate, tbs_len)
 }
 
 /// ID-data stage: verify the incoming DSC commitment and produce the
@@ -38,7 +41,9 @@ pub fn commit_to_id<let TBS_SIZE: u32, let SIG_SIZE: u32>(
     salt_out: Field,
     dg1: DG1Data,
     tbs_certificate: [u8; TBS_SIZE],
+    tbs_len: u32,
     sod_signature: [u8; SIG_SIZE],
+    sig_len: u32,
     signed_attributes: SignedAttrsData,
     signed_attributes_size: Field,
     e_content: EContentData,
@@ -47,11 +52,11 @@ pub fn commit_to_id<let TBS_SIZE: u32, let SIG_SIZE: u32>(
     let country_str: Alpha3CountryCode = country.as_str_unchecked();
 
     assert(
-        comm_in == hash_salt_country_tbs(salt_in, country_str, tbs_certificate),
+        comm_in == hash_salt_country_tbs(salt_in, country_str, tbs_certificate, tbs_len),
         "DSC commitment mismatch",
     );
 
-    let private_nullifier = calculate_private_nullifier(dg1, e_content, sod_signature);
+    let private_nullifier = calculate_private_nullifier(dg1, e_content, sod_signature, sig_len);
 
     hash_salt_country_signed_attr_dg1_e_content_private_nullifier(
         salt_out,

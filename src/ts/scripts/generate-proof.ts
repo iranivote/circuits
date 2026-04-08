@@ -1,39 +1,28 @@
 #!/usr/bin/env tsx
 /**
- * Generate a Noir passport proof for testing.
+ * Generate Noir proofs for local testing.
  *
  * Usage:
  *   npx tsx scripts/generate-proof.ts \
  *     --mrz1 "P<IRNREZAEE<<ALI<<<<<<<<<<<<<<<<<<<<<<<<<<<< " \
  *     --mrz2 "A1234567<8IRN9503152M3001015<<<<<<<<<<<<<<04" \
- *     [--stage dsc|id-data|integrity|age|all] \
+ *     [--stage signup|age|all] \
  *     [--sig rsa-pkcs-2048] \
  *     [--hash sha256] \
  *     [--mock]
- *
- * With --mock: uses a mock certificate registry and random crypto values
- * to test the full pipeline structurally (proof generation works but
- * crypto verification stubs return true).
  */
 
-import { fileURLToPath } from "url";
-import * as path from "path";
-import * as fs from "fs";
 import {
   generateProof,
   verifyProof,
-  executeCircuit,
-  getDscCircuit,
-  getIdDataCircuit,
-  getIntegrityCircuit,
+  getSignupCircuit,
   getDisclosureCircuit,
   buildDg1FromMrz,
-  buildDscInputs,
-  buildIdDataInputs,
-  buildIntegrityInputs,
+  buildSignupVerifyInputsFromPassport,
   buildAgeDisclosureInputs,
   buildMockRegistryProof,
-  randomSalt,
+  deterministicSalt,
+  deterministicNullifier,
 } from "../lib/index.js";
 import type {
   PassportData,
@@ -42,13 +31,6 @@ import type {
   ProofResult,
 } from "../lib/types.js";
 import { randomBytes } from "crypto";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// ---------------------------------------------------------------------------
-// CLI argument parsing
-// ---------------------------------------------------------------------------
 
 function getArg(name: string, required = false): string {
   const idx = process.argv.indexOf(`--${name}`);
@@ -59,7 +41,7 @@ function getArg(name: string, required = false): string {
     }
     return "";
   }
-  return process.argv[idx + 1];
+  return process.argv[idx + 1]!;
 }
 
 function hasFlag(name: string): boolean {
@@ -73,15 +55,7 @@ const sigArg = getArg("sig") || "rsa-pkcs-2048";
 const hashArg = (getArg("hash") || "sha256") as HashAlgorithm;
 const isMock = hasFlag("mock");
 
-// ---------------------------------------------------------------------------
-// Build mock passport data
-// ---------------------------------------------------------------------------
-
-function buildMockPassportData(
-  mrz1: string,
-  mrz2: string,
-  sig: RsaSigConfig,
-): PassportData {
+function buildMockPassportData(mrz1: string, mrz2: string, sig: RsaSigConfig): PassportData {
   const dg1 = buildDg1FromMrz(mrz1, mrz2);
   const modBytes = Math.ceil(sig.bitSize / 8);
 
@@ -119,10 +93,6 @@ function parseSigArg(s: string): RsaSigConfig {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 async function main() {
   const sig = parseSigArg(sigArg);
   const effectiveMrz1 = mrzLine1 || "P<IRNREZAEE<<ALI<<<<<<<<<<<<<<<<<<<<<<<<<<<< ";
@@ -140,115 +110,65 @@ async function main() {
 
   const passport = buildMockPassportData(effectiveMrz1, effectiveMrz2, sig);
   const registryProof = buildMockRegistryProof();
-  const tbsLen = passport.tbsCertificate.length;
 
   const results: Record<string, ProofResult> = {};
   const commitments: Record<string, string> = {};
 
-  // -- Stage 1: DSC sig-check --
-  if (stage === "all" || stage === "dsc") {
-    console.error("Stage 1: DSC sig-check ...");
-    const { circuit, name } = getDscCircuit(sig, hashArg, tbsLen);
+  if (stage === "all" || stage === "signup") {
+    console.error("Stage: attested signup (signup_verify_*) ...");
+    const { circuit, name } = getSignupCircuit(sig);
     console.error(`  Circuit: ${name}`);
 
-    const dscSalt = randomSalt();
-    const inputs = buildDscInputs({ passport, registryProof, salt: dscSalt });
-    // Strip internal metadata before passing to circuit
-    const { _salt, ...circuitInputs } = inputs as any;
+    const inputs = buildSignupVerifyInputsFromPassport(passport, registryProof);
 
     const t0 = Date.now();
-    const result = await generateProof(circuit, circuitInputs);
+    let result: ProofResult;
+    try {
+      result = await generateProof(circuit, inputs);
+    } catch (err) {
+      console.error(`  Expected with random mock data: ${(err as Error).message.slice(0, 120)}`);
+      result = { proof: new Uint8Array(0), publicInputs: [] };
+    }
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     console.error(`  Proof generated in ${elapsed}s`);
-    console.error(`  Public inputs: ${result.publicInputs}`);
-
-    const valid = await verifyProof(circuit, result.proof, result.publicInputs);
-    console.error(`  Verified: ${valid}`);
-
-    results.dsc = result;
-    commitments.dsc = result.publicInputs[result.publicInputs.length - 1];
+    if (result.publicInputs.length > 0) {
+      console.error(`  Public inputs: ${result.publicInputs}`);
+      const valid = await verifyProof(circuit, result.proof, result.publicInputs);
+      console.error(`  Verified: ${valid}`);
+      results.signup = result;
+      commitments.signup = result.publicInputs[result.publicInputs.length - 1]!;
+    }
     console.error("");
   }
 
-  // -- Stage 2: ID data sig-check --
-  if (stage === "all" || stage === "id-data") {
-    const dscCommitment = commitments.dsc ?? "0";
-    console.error("Stage 2: ID data sig-check ...");
-    const { circuit, name } = getIdDataCircuit(sig, hashArg, tbsLen);
-    console.error(`  Circuit: ${name}`);
-
-    const inputs = buildIdDataInputs({
-      passport,
-      dscCommitment,
-    });
-    const { _saltOut, ...circuitInputs } = inputs as any;
-
-    const t0 = Date.now();
-    const result = await generateProof(circuit, circuitInputs);
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.error(`  Proof generated in ${elapsed}s`);
-    console.error(`  Public inputs: ${result.publicInputs}`);
-
-    const valid = await verifyProof(circuit, result.proof, result.publicInputs);
-    console.error(`  Verified: ${valid}`);
-
-    results.idData = result;
-    commitments.idData = result.publicInputs[result.publicInputs.length - 1];
-    console.error("");
-  }
-
-  // -- Stage 3: Data integrity --
-  if (stage === "all" || stage === "integrity") {
-    const idDataCommitment = commitments.idData ?? "0";
-    console.error("Stage 3: Data integrity ...");
-    const { circuit, name } = getIntegrityCircuit(hashArg, hashArg);
-    console.error(`  Circuit: ${name}`);
-
-    const inputs = buildIntegrityInputs({
-      passport,
-      idDataCommitment,
-    });
-    const { _dg1Salt, _expiryDateSalt, _dg2HashSalt, _privateNullifierSalt, _privateNullifier, ...circuitInputs } = inputs as any;
-
-    const t0 = Date.now();
-    const result = await generateProof(circuit, circuitInputs);
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.error(`  Proof generated in ${elapsed}s`);
-
-    const valid = await verifyProof(circuit, result.proof, result.publicInputs);
-    console.error(`  Verified: ${valid}`);
-
-    results.integrity = result;
-    commitments.integrity = result.publicInputs[result.publicInputs.length - 1];
-    console.error("");
-  }
-
-  // -- Stage 4: Age disclosure --
   if (stage === "all" || stage === "age") {
-    const integrityCommitment = commitments.integrity ?? "0";
-    console.error("Stage 4: Age disclosure ...");
+    const passportCommitment = commitments.signup ?? "0";
+    console.error("Stage: Age disclosure ...");
     const { circuit, name } = getDisclosureCircuit("age");
     console.error(`  Circuit: ${name}`);
 
-    const inputs = buildAgeDisclosureInputs({
+    const dg1 = passport.dg1;
+    const salts = {
+      dg1Salt: deterministicSalt(dg1, "integrity-dg1"),
+      expiryDateSalt: deterministicSalt(dg1, "integrity-expiry"),
+      dg2HashSalt: deterministicSalt(dg1, "integrity-dg2-hash"),
+      privateNullifierSalt: deterministicSalt(dg1, "integrity-nullifier-salt"),
+      privateNullifier: Array.from(deterministicNullifier(dg1)),
+    };
+
+    const ageInputs = buildAgeDisclosureInputs({
       passport,
-      integrityCommitment,
+      integrityCommitment: passportCommitment,
       currentDate: BigInt(Math.floor(Date.now() / 1000)),
       minAge: 18,
       maxAge: 120,
       serviceScope: "1",
       serviceSubscope: "0",
-      salts: {
-        dg1Salt: (inputs as any)?._dg1Salt ?? randomSalt(),
-        expiryDateSalt: (inputs as any)?._expiryDateSalt ?? randomSalt(),
-        dg2HashSalt: (inputs as any)?._dg2HashSalt ?? randomSalt(),
-        privateNullifierSalt: (inputs as any)?._privateNullifierSalt ?? randomSalt(),
-        privateNullifier: Array.from(randomBytes(32)),
-      },
+      salts,
     });
 
     const t0 = Date.now();
-    const result = await generateProof(circuit, inputs);
+    const result = await generateProof(circuit, ageInputs);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     console.error(`  Proof generated in ${elapsed}s`);
 
@@ -259,12 +179,9 @@ async function main() {
     console.error("");
   }
 
-  // -- Output --
   const output = {
     circuitNames: {
-      dsc: results.dsc ? `sig_check_dsc_*` : undefined,
-      idData: results.idData ? `sig_check_id_data_*` : undefined,
-      integrity: results.integrity ? `data_check_integrity_*` : undefined,
+      signup: results.signup ? `signup_verify_rsa` : undefined,
       age: results.age ? `compare_age` : undefined,
     },
     proofs: Object.fromEntries(

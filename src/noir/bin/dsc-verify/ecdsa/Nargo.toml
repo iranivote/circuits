@@ -1,0 +1,10 @@
+[package]
+name = "dsc_verify_ecdsa"
+type = "bin"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+sig_verify_ecdsa = { path = "../../../lib/sig-verify/ecdsa" }
+utils = { path = "../../../lib/utils" }
+commitment = { path = "../../../lib/commitment/dsc-to-id" }

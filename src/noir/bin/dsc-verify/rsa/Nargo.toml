@@ -1,0 +1,10 @@
+[package]
+name = "dsc_verify_rsa"
+type = "bin"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+sig_verify_rsa = { path = "../../../lib/sig-verify/rsa" }
+utils = { path = "../../../lib/utils" }
+commitment = { path = "../../../lib/commitment/dsc-to-id" }

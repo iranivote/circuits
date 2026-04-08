@@ -4,10 +4,6 @@ import { fileURLToPath } from "url";
 import type {
   CompiledCircuit,
   SignatureConfig,
-  HashAlgorithm,
-  HashAlgorithmExtended,
-  RsaSigConfig,
-  EcdsaSigConfig,
 } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,43 +31,13 @@ function loadCircuit(name: string): CompiledCircuit {
 }
 
 // ---------------------------------------------------------------------------
-// Name builders -- must match circuit-builder.ts naming conventions
+// Modular circuit names (fixed — no per-algorithm variants)
 // ---------------------------------------------------------------------------
 
-function dscCircuitName(
-  sig: SignatureConfig,
-  hash: HashAlgorithm,
-  tbsMaxLen: number,
-): string {
-  if (sig.type === "rsa") {
-    const rsa = sig as RsaSigConfig;
-    return `sig_check_dsc_tbs_${tbsMaxLen}_rsa_${rsa.padding}_${rsa.bitSize}_${hash}`;
-  }
-  const ec = sig as EcdsaSigConfig;
-  return `sig_check_dsc_tbs_${tbsMaxLen}_ecdsa_${ec.family}_${ec.curveName}_${hash}`;
+function signupCircuitName(sig: SignatureConfig): string {
+  return sig.type === "rsa" ? "signup_verify_rsa" : "signup_verify_ecdsa";
 }
 
-function idDataCircuitName(
-  sig: SignatureConfig,
-  hash: HashAlgorithm,
-  tbsMaxLen: number,
-): string {
-  if (sig.type === "rsa") {
-    const rsa = sig as RsaSigConfig;
-    return `sig_check_id_data_tbs_${tbsMaxLen}_rsa_${rsa.padding}_${rsa.bitSize}_${hash}`;
-  }
-  const ec = sig as EcdsaSigConfig;
-  return `sig_check_id_data_tbs_${tbsMaxLen}_ecdsa_${ec.family}_${ec.curveName}_${hash}`;
-}
-
-function integrityCircuitName(
-  saHash: HashAlgorithmExtended,
-  dgHash: HashAlgorithmExtended,
-): string {
-  return `data_check_integrity_sa_${saHash}_dg_${dgHash}`;
-}
-
-// Static disclosure circuits have fixed names
 const DISCLOSURE_NAMES: Record<string, string> = {
   age: "compare_age",
   nationality_inclusion: "inclusion_check_nationality",
@@ -83,49 +49,20 @@ const DISCLOSURE_NAMES: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Determine TBS max length bucket
-// ---------------------------------------------------------------------------
-
-const TBS_BUCKETS = [700, 1000, 1200];
-
-export function selectTbsBucket(tbsLength: number): number {
-  for (const bucket of TBS_BUCKETS) {
-    if (tbsLength <= bucket) return bucket;
-  }
-  throw new Error(
-    `TBS certificate too large (${tbsLength} bytes). Max supported: ${TBS_BUCKETS[TBS_BUCKETS.length - 1]}`,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export function getDscCircuit(
-  sig: SignatureConfig,
-  hash: HashAlgorithm,
-  tbsLength: number,
+export function getSignupCircuit(
+  dscSig: SignatureConfig,
 ): { circuit: CompiledCircuit; name: string } {
-  const bucket = selectTbsBucket(tbsLength);
-  const name = dscCircuitName(sig, hash, bucket);
+  const name = signupCircuitName(dscSig);
   return { circuit: loadCircuit(name), name };
 }
 
-export function getIdDataCircuit(
-  sig: SignatureConfig,
-  hash: HashAlgorithm,
-  tbsLength: number,
+export function getSignupCircuitForDscKind(
+  dscKind: "rsa" | "ecdsa",
 ): { circuit: CompiledCircuit; name: string } {
-  const bucket = selectTbsBucket(tbsLength);
-  const name = idDataCircuitName(sig, hash, bucket);
-  return { circuit: loadCircuit(name), name };
-}
-
-export function getIntegrityCircuit(
-  saHash: HashAlgorithmExtended,
-  dgHash: HashAlgorithmExtended,
-): { circuit: CompiledCircuit; name: string } {
-  const name = integrityCircuitName(saHash, dgHash);
+  const name = dscKind === "rsa" ? "signup_verify_rsa" : "signup_verify_ecdsa";
   return { circuit: loadCircuit(name), name };
 }
 

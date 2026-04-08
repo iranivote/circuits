@@ -10,14 +10,9 @@ const __dirname = path.dirname(__filename);
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CERTIFICATE_REGISTRY_HEIGHT = 16;
-const SIGNED_ATTRIBUTES_SIZE = 256;
 const DEFAULT_CONCURRENCY = 8;
-
-// Root of the circuits workspace (two levels up from src/ts)
 const CIRCUITS_ROOT = path.resolve(__dirname, "../../..");
 
-// Resolve nargo binary -- check PATH first, then common install locations
 function findNargo(): string {
   try {
     return execSync("which nargo", { encoding: "utf-8" }).trim();
@@ -36,25 +31,8 @@ function findNargo(): string {
 }
 const NARGO = findNargo();
 
-type HashAlgorithm = "sha1" | "sha256" | "sha384" | "sha512";
-type HashAlgorithmExtended = "sha1" | "sha224" | "sha256" | "sha384" | "sha512";
-type RsaType = "pss" | "pkcs";
-
 function ensureDir(filePath: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-}
-
-function getHashByteSize(h: HashAlgorithm | HashAlgorithmExtended): number {
-  const map: Record<string, number> = { sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64 };
-  return map[h]!;
-}
-
-function getHashIdentifier(h: HashAlgorithmExtended): string {
-  return `${h.toUpperCase()}_IDENTIFIER`;
-}
-
-function getHashDigestLength(h: HashAlgorithmExtended): string {
-  return `${h.toUpperCase()}_DIGEST_LENGTH`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,6 +73,9 @@ const LIB_MEMBERS = [
   "src/noir/lib/sig-check/common",
   "src/noir/lib/sig-check/rsa",
   "src/noir/lib/sig-check/ecdsa",
+  "src/noir/lib/sig-verify/rsa",
+  "src/noir/lib/sig-verify/ecdsa",
+  "src/noir/lib/hash-multiplex",
   "src/noir/lib/data-check/integrity",
   "src/noir/lib/data-check/expiry",
   "src/noir/lib/data-check/tbs-pubkey",
@@ -111,7 +92,7 @@ const LIB_MEMBERS = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Static circuit definitions
+// Static circuit definitions (7 disclosure/nullifier circuits)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const STATIC_CIRCUITS: { name: string; path: string }[] = [
@@ -122,6 +103,15 @@ const STATIC_CIRCUITS: { name: string; path: string }[] = [
   { name: "exclusion_check_place_of_birth", path: "src/noir/bin/exclusion-check/place-of-birth/standard" },
   { name: "disclose_bytes", path: "src/noir/bin/disclose/bytes/standard" },
   { name: "bind", path: "src/noir/bin/bind/standard" },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modular signup circuits (RSA / ECDSA DSC signing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODULAR_CIRCUITS: { name: string; path: string }[] = [
+  { name: "signup_verify_rsa", path: "src/noir/bin/signup-verify/rsa" },
+  { name: "signup_verify_ecdsa", path: "src/noir/bin/signup-verify/ecdsa" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,7 +137,6 @@ function writeStaticCircuit(name: string, circuitPath: string, noirSrc: string, 
 function generateStaticCircuits() {
   console.log("Generating static circuits...");
 
-  // ── compare_age ─────────────────────────────────────────────────────
   writeStaticCircuit("compare_age", "src/noir/bin/compare/age/standard",
 `use commitment::nullify;
 use compare_age::{calculate_param_commitment, compare_age};
@@ -185,7 +174,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── inclusion_check_nationality ─────────────────────────────────────
   writeStaticCircuit("inclusion_check_nationality", "src/noir/bin/inclusion-check/nationality/standard",
 `use commitment::nullify;
 use data_check_expiry::check_expiry;
@@ -223,7 +211,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── exclusion_check_nationality ─────────────────────────────────────
   writeStaticCircuit("exclusion_check_nationality", "src/noir/bin/exclusion-check/nationality/standard",
 `use commitment::nullify;
 use data_check_expiry::check_expiry;
@@ -261,7 +248,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── inclusion_check_place_of_birth ──────────────────────────────────
   writeStaticCircuit("inclusion_check_place_of_birth", "src/noir/bin/inclusion-check/place-of-birth/standard",
 `use commitment::nullify;
 use data_check_expiry::check_expiry;
@@ -304,7 +290,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── exclusion_check_place_of_birth ──────────────────────────────────
   writeStaticCircuit("exclusion_check_place_of_birth", "src/noir/bin/exclusion-check/place-of-birth/standard",
 `use commitment::nullify;
 use data_check_expiry::check_expiry;
@@ -347,7 +332,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── disclose_bytes ──────────────────────────────────────────────────
   writeStaticCircuit("disclose_bytes", "src/noir/bin/disclose/bytes/standard",
 `use commitment::nullify;
 use data_check_expiry::check_expiry;
@@ -384,7 +368,6 @@ fn main(
     { name: "data_check_expiry", lib: "data-check/expiry" },
   ]);
 
-  // ── bind ────────────────────────────────────────────────────────────
   writeStaticCircuit("bind", "src/noir/bin/bind/standard",
 `use bind::calculate_param_commitment;
 use commitment::nullify;
@@ -424,390 +407,13 @@ fn main(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generated circuit templates: DSC sig-check
-// ─────────────────────────────────────────────────────────────────────────────
-
-function dscRsaTemplate(rsaType: RsaType, bitSize: number, tbsMaxLen: number, hash: HashAlgorithm): string {
-  const modBytes = Math.ceil(bitSize / 8);
-  return `// Auto-generated by circuit-builder.ts
-use commitment::commit_to_dsc;
-use sig_check_rsa::verify_rsa${bitSize}_${hash}_${rsaType};
-use utils::types::Alpha3CountryCode;
-
-fn main(
-    certificate_registry_root: pub Field,
-    certificate_registry_index: Field,
-    certificate_registry_hash_path: [Field; ${CERTIFICATE_REGISTRY_HEIGHT}],
-    certificate_tags: [Field; 3],
-    salt: Field,
-    country: Alpha3CountryCode,
-    tbs_certificate: [u8; ${tbsMaxLen}],
-    csc_pubkey: [u8; ${modBytes}],
-    csc_pubkey_redc_param: [u8; ${modBytes + 1}],
-    dsc_signature: [u8; ${modBytes}],
-    exponent: u32,${rsaType === "pss" ? "\n    pss_salt_len: u32," : ""}
-) -> pub Field {
-    // Safety: length is verified by the hash + signature check
-    let tbs_certificate_len = unsafe { utils::unsafe_get_asn1_element_length(tbs_certificate) };
-    assert(
-        verify_rsa${bitSize}_${hash}_${rsaType}(
-            csc_pubkey, dsc_signature, csc_pubkey_redc_param, exponent,
-            tbs_certificate, tbs_certificate_len,${rsaType === "pss" ? " pss_salt_len," : ""}
-        ),
-        "RSA signature verification failed",
-    );
-    commit_to_dsc(
-        certificate_registry_root, certificate_registry_index,
-        certificate_registry_hash_path, certificate_tags,
-        country, tbs_certificate, salt, csc_pubkey,
-    )
-}
-`;
-}
-
-function dscEcdsaTemplate(curveFamily: string, curveName: string, bitSize: number, tbsMaxLen: number, hash: HashAlgorithm): string {
-  const coordBytes = Math.ceil(bitSize / 8);
-  return `// Auto-generated by circuit-builder.ts
-use commitment::commit_to_dsc;
-use sig_check_common::${hash}_and_check_data_to_sign;
-use sig_check_ecdsa::verify_${curveFamily}_${curveName};
-use utils::{split_array, types::Alpha3CountryCode};
-
-fn main(
-    certificate_registry_root: pub Field,
-    certificate_registry_index: Field,
-    certificate_registry_hash_path: [Field; ${CERTIFICATE_REGISTRY_HEIGHT}],
-    certificate_tags: [Field; 3],
-    salt: Field,
-    country: Alpha3CountryCode,
-    csc_pubkey_x: [u8; ${coordBytes}],
-    csc_pubkey_y: [u8; ${coordBytes}],
-    dsc_signature: [u8; ${coordBytes * 2}],
-    tbs_certificate: [u8; ${tbsMaxLen}],
-) -> pub Field {
-    // Safety: length is verified by the hash + signature check
-    let tbs_certificate_len = unsafe { utils::unsafe_get_asn1_element_length(tbs_certificate) };
-    let (r, s): ([u8; ${coordBytes}], [u8; ${coordBytes}]) = split_array(dsc_signature);
-    let msg_hash = ${hash}_and_check_data_to_sign(tbs_certificate, tbs_certificate_len);
-    assert(
-        verify_${curveFamily}_${curveName}(csc_pubkey_x, csc_pubkey_y, r, s, msg_hash),
-        "ECDSA signature verification failed",
-    );
-    let pubkey_concat: [u8; ${coordBytes * 2}] = utils::concat_arrays(csc_pubkey_x, csc_pubkey_y);
-    commit_to_dsc(
-        certificate_registry_root, certificate_registry_index,
-        certificate_registry_hash_path, certificate_tags,
-        country, tbs_certificate, salt, pubkey_concat,
-    )
-}
-`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Generated circuit templates: ID data sig-check
-// ─────────────────────────────────────────────────────────────────────────────
-
-function idDataRsaTemplate(rsaType: RsaType, bitSize: number, tbsMaxLen: number, hash: HashAlgorithm): string {
-  const modBytes = Math.ceil(bitSize / 8);
-  return `// Auto-generated by circuit-builder.ts
-use commitment::commit_to_id;
-use data_check_tbs_pubkey::verify_rsa_pubkey_in_tbs;
-use sig_check_rsa::verify_rsa${bitSize}_${hash}_${rsaType};
-use utils::types::{DG1Data, EContentData, SignedAttrsData};
-
-fn main(
-    comm_in: pub Field,
-    salt_in: Field,
-    salt_out: Field,
-    dg1: DG1Data,
-    dsc_pubkey: [u8; ${modBytes}],
-    dsc_pubkey_redc_param: [u8; ${modBytes + 1}],
-    sod_signature: [u8; ${modBytes}],
-    tbs_certificate: [u8; ${tbsMaxLen}],
-    signed_attributes: SignedAttrsData,
-    exponent: u32,
-    e_content: EContentData,${rsaType === "pss" ? "\n    pss_salt_len: u32," : ""}
-) -> pub Field {
-    verify_rsa_pubkey_in_tbs(dsc_pubkey, tbs_certificate);
-    // Safety: length is verified by the hash + signature check
-    let signed_attributes_size = unsafe { utils::unsafe_get_asn1_element_length(signed_attributes) };
-    assert(
-        verify_rsa${bitSize}_${hash}_${rsaType}(
-            dsc_pubkey, sod_signature, dsc_pubkey_redc_param, exponent,
-            signed_attributes, signed_attributes_size,${rsaType === "pss" ? " pss_salt_len," : ""}
-        ),
-        "RSA signature verification failed",
-    );
-    commit_to_id(
-        comm_in, salt_in, salt_out, dg1, tbs_certificate,
-        sod_signature, signed_attributes,
-        signed_attributes_size as Field, e_content,
-    )
-}
-`;
-}
-
-function idDataEcdsaTemplate(curveFamily: string, curveName: string, bitSize: number, tbsMaxLen: number, hash: HashAlgorithm): string {
-  const coordBytes = Math.ceil(bitSize / 8);
-  return `// Auto-generated by circuit-builder.ts
-use commitment::commit_to_id;
-use data_check_tbs_pubkey::verify_ecdsa_pubkey_in_tbs;
-use sig_check_common::${hash}_and_check_data_to_sign;
-use sig_check_ecdsa::verify_${curveFamily}_${curveName};
-use utils::{split_array, types::{DG1Data, EContentData, SignedAttrsData}};
-
-fn main(
-    comm_in: pub Field,
-    salt_in: Field,
-    salt_out: Field,
-    dg1: DG1Data,
-    dsc_pubkey_x: [u8; ${coordBytes}],
-    dsc_pubkey_y: [u8; ${coordBytes}],
-    sod_signature: [u8; ${coordBytes * 2}],
-    tbs_certificate: [u8; ${tbsMaxLen}],
-    signed_attributes: SignedAttrsData,
-    e_content: EContentData,
-) -> pub Field {
-    // Safety: length is verified by the hash + signature check
-    let signed_attributes_size = unsafe { utils::unsafe_get_asn1_element_length(signed_attributes) };
-    let (r, s): ([u8; ${coordBytes}], [u8; ${coordBytes}]) = split_array(sod_signature);
-    let msg_hash = ${hash}_and_check_data_to_sign(signed_attributes, signed_attributes_size);
-    let pubkey_concat: [u8; ${coordBytes * 2}] = utils::concat_arrays(dsc_pubkey_x, dsc_pubkey_y);
-    verify_ecdsa_pubkey_in_tbs(pubkey_concat, tbs_certificate);
-    assert(
-        verify_${curveFamily}_${curveName}(dsc_pubkey_x, dsc_pubkey_y, r, s, msg_hash),
-        "ECDSA signature verification failed",
-    );
-    commit_to_id(
-        comm_in, salt_in, salt_out, dg1, tbs_certificate,
-        sod_signature, signed_attributes,
-        signed_attributes_size as Field, e_content,
-    )
-}
-`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Generated circuit template: Data integrity check
-// ─────────────────────────────────────────────────────────────────────────────
-
-function dataIntegrityCheckTemplate(saHash: HashAlgorithmExtended, dgHash: HashAlgorithmExtended): string {
-  const dgBytes = getHashByteSize(dgHash);
-  return `// Auto-generated by circuit-builder.ts
-use commitment::commit_to_disclosure;
-use data_check_integrity::{check_dg1_${dgHash}, check_signed_attributes_${saHash}, get_dg2_hash_from_econtent};
-use utils::types::{EContentData, SignedAttrsData, SaltedValue};
-
-fn main(
-    comm_in: pub Field,
-    salt_in: Field,
-    salted_dg1: SaltedValue<95>,
-    expiry_date_salt: Field,
-    dg2_hash_salt: Field,
-    signed_attributes: SignedAttrsData,
-    e_content: EContentData,
-    salted_private_nullifier: SaltedValue<32>,
-) -> pub Field {
-    // Safety: length is verified by the hash checks below
-    let e_content_size = unsafe { utils::unsafe_get_asn1_element_length(e_content) };
-    check_dg1_${dgHash}(salted_dg1.value, e_content, e_content_size);
-    // Safety: length was committed in the ID data circuit
-    let signed_attributes_size = unsafe { utils::unsafe_get_asn1_element_length(signed_attributes) };
-    check_signed_attributes_${saHash}(signed_attributes, e_content, e_content_size);
-    let dg2_hash: [u8; ${dgBytes}] = get_dg2_hash_from_econtent(e_content, e_content_size);
-    commit_to_disclosure(
-        comm_in, salt_in, salted_dg1, expiry_date_salt,
-        dg2_hash_salt, dg2_hash,
-        [${dgHash === "sha1" ? "1" : dgHash === "sha224" ? "2" : dgHash === "sha256" ? "3" : dgHash === "sha384" ? "4" : "5"}],
-        signed_attributes, signed_attributes_size as Field,
-        e_content, salted_private_nullifier,
-    )
-}
-`;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Signature algorithm configurations
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface SigAlgorithm {
-  type: "ecdsa" | "rsa";
-  family: string;
-  curveName?: string;
-  bitSize: number;
-}
-
-const SIGNATURE_ALGORITHMS: SigAlgorithm[] = [
-  // ECDSA - NIST
-  { type: "ecdsa", family: "nist", curveName: "p192", bitSize: 192 },
-  { type: "ecdsa", family: "nist", curveName: "p224", bitSize: 224 },
-  { type: "ecdsa", family: "nist", curveName: "p256", bitSize: 256 },
-  { type: "ecdsa", family: "nist", curveName: "p384", bitSize: 384 },
-  { type: "ecdsa", family: "nist", curveName: "p521", bitSize: 521 },
-  // ECDSA - Brainpool
-  { type: "ecdsa", family: "brainpool", curveName: "192r1", bitSize: 192 },
-  { type: "ecdsa", family: "brainpool", curveName: "224r1", bitSize: 224 },
-  { type: "ecdsa", family: "brainpool", curveName: "256r1", bitSize: 256 },
-  { type: "ecdsa", family: "brainpool", curveName: "384r1", bitSize: 384 },
-  { type: "ecdsa", family: "brainpool", curveName: "512r1", bitSize: 512 },
-  // RSA - PSS
-  { type: "rsa", family: "pss", bitSize: 1024 },
-  { type: "rsa", family: "pss", bitSize: 2048 },
-  { type: "rsa", family: "pss", bitSize: 3072 },
-  { type: "rsa", family: "pss", bitSize: 4096 },
-  // RSA - PKCS#1v1.5
-  { type: "rsa", family: "pkcs", bitSize: 1024 },
-  { type: "rsa", family: "pkcs", bitSize: 2048 },
-  { type: "rsa", family: "pkcs", bitSize: 3072 },
-  { type: "rsa", family: "pkcs", bitSize: 4096 },
-];
-
-const TBS_MAX_LENGTHS = [700, 1000, 1200];
-const HASH_ALGORITHMS: HashAlgorithm[] = ["sha1", "sha256", "sha384", "sha512"];
-const HASH_ALGORITHMS_EXTENDED: HashAlgorithmExtended[] = ["sha1", "sha224", "sha256", "sha384", "sha512"];
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Generator functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-function generateDscCircuits() {
-  console.log("Generating DSC sig-check circuits...");
-  let count = 0;
-  for (const alg of SIGNATURE_ALGORITHMS) {
-    for (const tbsLen of TBS_MAX_LENGTHS) {
-      for (const hash of HASH_ALGORITHMS) {
-        if (hash === "sha512" && alg.type === "rsa" && alg.bitSize === 1024) continue;
-
-        let noirSrc: string;
-        let name: string;
-        let folderPath: string;
-        let deps: { name: string; path: string }[];
-
-        if (alg.type === "rsa") {
-          name = `sig_check_dsc_tbs_${tbsLen}_rsa_${alg.family}_${alg.bitSize}_${hash}`;
-          folderPath = `src/noir/bin/sig-check/dsc/tbs_${tbsLen}/rsa/${alg.family}/${alg.bitSize}/${hash}`;
-          noirSrc = dscRsaTemplate(alg.family as RsaType, alg.bitSize, tbsLen, hash);
-          const lp = (s: string) => relLibPath(folderPath, s);
-          deps = [
-            { name: "sig_check_rsa", path: lp("sig-check/rsa") },
-            { name: "utils", path: lp("utils") },
-            { name: "commitment", path: lp("commitment/dsc-to-id") },
-          ];
-        } else {
-          name = `sig_check_dsc_tbs_${tbsLen}_ecdsa_${alg.family}_${alg.curveName}_${hash}`;
-          folderPath = `src/noir/bin/sig-check/dsc/tbs_${tbsLen}/ecdsa/${alg.family}/${alg.curveName}/${hash}`;
-          noirSrc = dscEcdsaTemplate(alg.family, alg.curveName!, alg.bitSize, tbsLen, hash);
-          const lp = (s: string) => relLibPath(folderPath, s);
-          deps = [
-            { name: "sig_check_ecdsa", path: lp("sig-check/ecdsa") },
-            { name: "utils", path: lp("utils") },
-            { name: "commitment", path: lp("commitment/dsc-to-id") },
-            { name: "sig_check_common", path: lp("sig-check/common") },
-          ];
-        }
-
-        const absFolder = path.join(CIRCUITS_ROOT, folderPath);
-        const mainPath = path.join(absFolder, "src/main.nr");
-        const tomlPath = path.join(absFolder, "Nargo.toml");
-        ensureDir(mainPath);
-        fs.writeFileSync(mainPath, noirSrc);
-        fs.writeFileSync(tomlPath, nargoToml(name, deps));
-        generatedCircuits.push({ name, path: folderPath });
-        count++;
-      }
-    }
-  }
-  console.log(`  Generated ${count} DSC circuits`);
-}
-
-function generateIdDataCircuits() {
-  console.log("Generating ID data sig-check circuits...");
-  let count = 0;
-  for (const alg of SIGNATURE_ALGORITHMS) {
-    for (const tbsLen of TBS_MAX_LENGTHS) {
-      for (const hash of HASH_ALGORITHMS) {
-        if (hash === "sha512" && alg.type === "rsa" && alg.bitSize === 1024) continue;
-
-        let noirSrc: string;
-        let name: string;
-        let folderPath: string;
-        let deps: { name: string; path: string }[];
-
-        if (alg.type === "rsa") {
-          name = `sig_check_id_data_tbs_${tbsLen}_rsa_${alg.family}_${alg.bitSize}_${hash}`;
-          folderPath = `src/noir/bin/sig-check/id-data/tbs_${tbsLen}/rsa/${alg.family}/${alg.bitSize}/${hash}`;
-          noirSrc = idDataRsaTemplate(alg.family as RsaType, alg.bitSize, tbsLen, hash);
-          const lp = (s: string) => relLibPath(folderPath, s);
-          deps = [
-            { name: "sig_check_rsa", path: lp("sig-check/rsa") },
-            { name: "utils", path: lp("utils") },
-            { name: "data_check_tbs_pubkey", path: lp("data-check/tbs-pubkey") },
-            { name: "commitment", path: lp("commitment/dsc-to-id") },
-          ];
-        } else {
-          name = `sig_check_id_data_tbs_${tbsLen}_ecdsa_${alg.family}_${alg.curveName}_${hash}`;
-          folderPath = `src/noir/bin/sig-check/id-data/tbs_${tbsLen}/ecdsa/${alg.family}/${alg.curveName}/${hash}`;
-          noirSrc = idDataEcdsaTemplate(alg.family, alg.curveName!, alg.bitSize, tbsLen, hash);
-          const lp = (s: string) => relLibPath(folderPath, s);
-          deps = [
-            { name: "sig_check_ecdsa", path: lp("sig-check/ecdsa") },
-            { name: "utils", path: lp("utils") },
-            { name: "data_check_tbs_pubkey", path: lp("data-check/tbs-pubkey") },
-            { name: "commitment", path: lp("commitment/dsc-to-id") },
-            { name: "sig_check_common", path: lp("sig-check/common") },
-          ];
-        }
-
-        const absFolder = path.join(CIRCUITS_ROOT, folderPath);
-        const mainPath = path.join(absFolder, "src/main.nr");
-        const tomlPath = path.join(absFolder, "Nargo.toml");
-        ensureDir(mainPath);
-        fs.writeFileSync(mainPath, noirSrc);
-        fs.writeFileSync(tomlPath, nargoToml(name, deps));
-        generatedCircuits.push({ name, path: folderPath });
-        count++;
-      }
-    }
-  }
-  console.log(`  Generated ${count} ID data circuits`);
-}
-
-function generateDataIntegrityCheckCircuits() {
-  console.log("Generating data integrity check circuits...");
-  let count = 0;
-  for (const saHash of HASH_ALGORITHMS_EXTENDED) {
-    for (const dgHash of HASH_ALGORITHMS_EXTENDED) {
-      const name = `data_check_integrity_sa_${saHash}_dg_${dgHash}`;
-      const folderPath = `src/noir/bin/data-check/integrity/sa_${saHash}/dg_${dgHash}`;
-      const noirSrc = dataIntegrityCheckTemplate(saHash, dgHash);
-      const lp = (s: string) => relLibPath(folderPath, s);
-      const deps = [
-        { name: "data_check_integrity", path: lp("data-check/integrity") },
-        { name: "commitment", path: lp("commitment/integrity-to-disclosure") },
-        { name: "utils", path: lp("utils") },
-      ];
-
-      const absFolder = path.join(CIRCUITS_ROOT, folderPath);
-      const mainPath = path.join(absFolder, "src/main.nr");
-      const tomlPath = path.join(absFolder, "Nargo.toml");
-      ensureDir(mainPath);
-      fs.writeFileSync(mainPath, noirSrc);
-      fs.writeFileSync(tomlPath, nargoToml(name, deps));
-      generatedCircuits.push({ name, path: folderPath });
-      count++;
-    }
-  }
-  console.log(`  Generated ${count} integrity check circuits`);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Workspace Nargo.toml writer
 // ─────────────────────────────────────────────────────────────────────────────
 
 function generateWorkspaceToml() {
   const allBinPaths = [
     ...STATIC_CIRCUITS.map((c) => c.path),
-    ...generatedCircuits.map((c) => c.path),
+    ...MODULAR_CIRCUITS.map((c) => c.path),
   ];
   const allMembers = [...allBinPaths, ...LIB_MEMBERS];
   const toml = `[workspace]\nmembers = [\n${allMembers.map((m) => `  "${m}"`).join(",\n")},\n]\n`;
@@ -841,7 +447,7 @@ class PromisePool {
 }
 
 async function compileCircuits(concurrency: number, force: boolean, filter?: string) {
-  const allCircuits = [...STATIC_CIRCUITS, ...generatedCircuits];
+  const allCircuits = [...STATIC_CIRCUITS, ...MODULAR_CIRCUITS];
   let toCompile = force
     ? allCircuits
     : allCircuits.filter(({ name }) => !fs.existsSync(path.join(CIRCUITS_ROOT, "target", `${name}.json`)));
@@ -873,7 +479,7 @@ async function compileCircuits(concurrency: number, force: boolean, filter?: str
             (error, _stdout, _stderr) => {
               if (error) {
                 console.error(`  FAILED: ${name}: ${error.message}`);
-                resolve(); // continue compiling others
+                resolve();
               } else {
                 console.log(`  OK: ${name} (${idx}/${toCompile.length})`);
                 resolve();
@@ -898,13 +504,10 @@ const args = process.argv.slice(2);
 
 if (args.includes("generate")) {
   generateStaticCircuits();
-  generateDscCircuits();
-  generateIdDataCircuits();
-  generateDataIntegrityCheckCircuits();
   generateWorkspaceToml();
 
-  const total = STATIC_CIRCUITS.length + generatedCircuits.length;
-  console.log(`\nTotal: ${total} circuits generated`);
+  const total = STATIC_CIRCUITS.length + MODULAR_CIRCUITS.length;
+  console.log(`\nTotal: ${total} circuits (${STATIC_CIRCUITS.length} static + ${MODULAR_CIRCUITS.length} modular)`);
 }
 
 if (args.includes("compile")) {
@@ -926,7 +529,7 @@ if (!args.includes("generate") && !args.includes("compile")) {
   ts-node scripts/circuit-builder.ts generate              Generate all circuit source files
   ts-node scripts/circuit-builder.ts compile               Compile all circuits with nargo
   ts-node scripts/circuit-builder.ts generate compile      Both
-  
+
 Options:
   --concurrency=N    Max parallel compilations (default: ${DEFAULT_CONCURRENCY})
   --force            Recompile even if target exists

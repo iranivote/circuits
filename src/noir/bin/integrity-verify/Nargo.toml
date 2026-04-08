@@ -1,0 +1,10 @@
+[package]
+name = "integrity_verify"
+type = "bin"
+authors = ["IraniVote"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+data_check_integrity = { path = "../../lib/data-check/integrity" }
+commitment = { path = "../../lib/commitment/integrity-to-disclosure" }
+utils = { path = "../../lib/utils" }
